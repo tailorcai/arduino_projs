@@ -3,12 +3,14 @@
 #include <OneButton.h>
 #include <Keypad.h>
 #include <AgileStateMachine.h>
+#include "tennis.h"
+// #include <WiFi.h> 
+#include <ESP32Encoder.h>
 
-#include <WiFi.h> 
-
-WifiManager manager;
+// WifiManager manager;
 StateMachine fsm;
 LiquidCrystal_I2C lcd(0x27, 16, 2);
+ESP32Encoder ball_feed_encoder;
 
 const byte ROWS = 4; //four rows
 const byte COLS = 4; //three columns
@@ -27,10 +29,13 @@ const int PIN_SCL = 1;
 const int PIN_PWM1 = 18;  // 16 corresponds to GPIO16
 const int PIN_PWM2 = 8;  // 16 corresponds to GPIO16
 const int PIN_PWM_FEED = 3; // GPIO3
+const int PIN_ENCODER_A = 17, PIN_ENCODER_B = 16; // 
 
 int pwm_percent(int percent) {
   return round(255*max(0,min(100,percent))/100.0);
 }
+
+MotorPID feeder_pid;
 
 class Level {
 public:
@@ -72,8 +77,8 @@ class MachineRun {
     int get_ball_speed_percent() {
         return ball_speed.map(80,100);
     }
-    int get_feed_percent() {
-        return feed_speed.map(60,100);
+    int get_feed_interval() { // seconds per ball
+        return feed_speed.map(10,2);    // from 10 to 2
     }
     int get_spin_percent() {
         return feed_speed.map(-30,30);
@@ -132,17 +137,30 @@ void onStartRunning() {
 }
 
 void onRunning() {
-  if( machine_run.is_dirty()) {
+  // PID should always be running
+  // 3 balls per round
+  // reduction rate: 1:600
+  // 60 / (interval*3) * 600 is the motor rpm
+  feeder_pid.set_rpm( 60.0*600/ ( machine_run.get_feed_interval() * 3) );  
+  int cnt = ball_feed_encoder.getCount();
+  if( feeder_pid.run(cnt) ) {
+    ball_feed_encoder.clearCount();
+    ledcWrite(PIN_PWM_FEED, feeder_pid.pid_out );
+  }
+
+  static long tm = millis();
+
+  if( millis() - tm > 500 || machine_run.is_dirty()) {
     ledcWrite(PIN_PWM1, pwm_percent(machine_run.get_ball_speed_percent()));
     ledcWrite(PIN_PWM2, pwm_percent(machine_run.get_ball_speed_percent()));
 
-    ledcWrite(PIN_PWM_FEED, pwm_percent(machine_run.get_feed_percent()));
-
     lcd.clear();
     lcd.setCursor(1, 0);
-    lcd.print( "On" );
+    lcd.print( "On :"+ String(feeder_pid.pid_out ) );
     lcd.setCursor(1,1);
-    lcd.print( String( machine_run.get_ball_speed_percent()) + " " + String(machine_run.get_feed_percent()));    
+    lcd.print( String( machine_run.get_ball_speed_percent()) + " " + String(machine_run.get_feed_interval()));    
+
+    tm = millis();
   }
   machine_run.set_dirty( false ); 
 }
@@ -159,7 +177,7 @@ void onIdleRunning() {
     lcd.setCursor(1, 0);
     lcd.print( "Off" );
     lcd.setCursor(1,1);
-    lcd.print( String( machine_run.get_ball_speed_percent()) + " " + String(machine_run.get_feed_percent()));    
+    lcd.print( String( machine_run.get_ball_speed_percent()) + " " + String(machine_run.get_feed_interval()));    
   }
   machine_run.set_dirty( false );
 }
@@ -196,11 +214,14 @@ void setup(){
   Wire.begin(PIN_SDA, PIN_SCL);
 
   // WIFI
-  manager.setupAP(); // Launch AP mode first, then fail over to connecting to a station
+  // manager.setupAP(); // Launch AP mode first, then fail over to connecting to a station
   // while (manager.getState() != Connected) {
 	//  	manager.loop();
 	//  	delay(10);
 	// }
+
+  ball_feed_encoder.attachSingleEdge ( PIN_ENCODER_A, PIN_ENCODER_B );
+  ball_feed_encoder.setCount ( 0 );
 
   // init lcd
   lcd.init();
@@ -251,9 +272,9 @@ void loop(){
 
   fsm.execute();
 
-	manager.loop();
-	if (manager.getState() == Connected)  // only update if WiFi is up
-		updateDashboard();                  // update the dashboard values
+	// manager.loop();
+	// if (manager.getState() == Connected)  // only update if WiFi is up
+	// 	updateDashboard();                  // update the dashboard values
 
   delay(1);
 }
