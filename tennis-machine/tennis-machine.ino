@@ -41,7 +41,7 @@ class Level {
 public:
   int v;
   int levels;
-  Level(int alevels): levels(alevels),v(0) {}
+  Level(int alevels, int init=0): levels(alevels),v(init) {}
 
   void inc() {
     v ++;
@@ -61,10 +61,11 @@ class MachineRun {
   public:
     Level ball_speed; // %
     Level feed_speed; // %
-    Level spin;
+    Level ball_spin;
     // bool on; //
 
-    MachineRun():ball_speed(5),feed_speed(5),spin(3),dirty(false) {}
+    MachineRun():ball_speed(5),feed_speed(5),ball_spin(5,2),dirty(false) {
+    }
 
     void init() {
       dirty = true;
@@ -74,14 +75,30 @@ class MachineRun {
       dirty = v;
     }
 
+    void get_wheel_speed_percent(int& top, int& bottom) {
+      float v = get_ball_speed_percent();
+      // bottom = top;
+      float spin = get_spin_percent()/100.0;
+      Serial.println("spin v=" + String(spin));
+      if( spin >=0 ) {
+        v = min((float)100,  v * (1 + spin));
+        bottom = (float) v * (1-spin);
+        top = v;
+      }
+      else {
+        bottom = (float) v*(1 + spin);
+        top = v;
+      }
+    }    
+
     int get_ball_speed_percent() {
-        return ball_speed.map(80,100);
+        return ball_speed.map(50,100);
     }
     int get_feed_interval() { // seconds per ball
         return feed_speed.map(10,2);    // from 10 to 2
     }
     int get_spin_percent() {
-        return feed_speed.map(-30,30);
+        return ball_spin.map(-30,30);
     }
 
     bool is_dirty() { return dirty; }
@@ -110,30 +127,24 @@ void rc_Feed_click() {
 }
 
 void rc_Spin_click() {
-  machine_run.spin.inc();
+  machine_run.ball_spin.inc();
   machine_run.set_dirty();
 }
-
 
 void OnEnterStartWheel() {
   // start wheel
   // machine_state.on = true;
   A_pressed = false;
   machine_run.set_dirty(true);
-}
 
-void onStartRunning() {
-  if( machine_run.is_dirty()) {
-    ledcWrite(PIN_PWM1, pwm_percent(machine_run.get_ball_speed_percent()));
-    ledcWrite(PIN_PWM2, pwm_percent(machine_run.get_ball_speed_percent()));
+  ledcWrite(PIN_PWM1, 255 );//pwm_percent(machine_run.get_ball_speed_percent()));
+  ledcWrite(PIN_PWM2, 255 );//pwm_percent(machine_run.get_ball_speed_percent()));
 
-    lcd.clear();
-    lcd.setCursor(1, 0);
-    lcd.print( "Starting " );
-    lcd.setCursor(1,1);
-    lcd.print( String( machine_run.get_ball_speed_percent()) + " " + String(0));    
-  }
-  machine_run.set_dirty(false);
+  lcd.clear();
+  lcd.setCursor(1, 0);
+  lcd.print( "Starting " );
+  lcd.setCursor(1,1);
+  lcd.print( String( machine_run.get_ball_speed_percent()) + " 0 0");    
 }
 
 void onRunning() {
@@ -151,15 +162,20 @@ void onRunning() {
   static long tm = millis();
 
   if( millis() - tm > 500 || machine_run.is_dirty()) {
-    ledcWrite(PIN_PWM1, pwm_percent(machine_run.get_ball_speed_percent()));
-    ledcWrite(PIN_PWM2, pwm_percent(machine_run.get_ball_speed_percent()));
+    int top, bottom;
+    machine_run.get_wheel_speed_percent(top,bottom);
+    ledcWrite(PIN_PWM1, pwm_percent(top));
+    ledcWrite(PIN_PWM2, pwm_percent(bottom));
 
     lcd.clear();
     lcd.setCursor(1, 0);
-    lcd.print( "On :"+ String(feeder_pid.pid_out ) );
+    String s = "On ["+ String(top ) + "," + String(bottom) + "]" ;
+    Serial.println(s);
+    lcd.print( s );
     lcd.setCursor(1,1);
-    lcd.print( String( machine_run.get_ball_speed_percent()) + " " + String(machine_run.get_feed_interval()));    
-
+    s = String( machine_run.get_ball_speed_percent()) + "% " + String(machine_run.get_feed_interval()) + "s " + String(machine_run.ball_spin.v);
+    lcd.print( s );    
+    Serial.println(s);
     tm = millis();
   }
   machine_run.set_dirty( false ); 
@@ -172,7 +188,8 @@ void stopAllMotor() {
 }
 
 void onIdleRunning() {
-  if( machine_run.is_dirty()) {
+  static long tm = millis();
+  if( millis() - tm > 500 || machine_run.is_dirty()) {
     lcd.clear();
     lcd.setCursor(1, 0);
     lcd.print( "Off" );
@@ -183,13 +200,22 @@ void onIdleRunning() {
 }
 
 void onEnterIdle() {
-  machine_run.set_dirty();  // force update display
+  stopAllMotor();
+  // reset button press state
   A_pressed=false;
 }
 
-void onEnterRunning() {
-  machine_run.set_dirty(); // force update display
+void OnEnterWheelReady() {
+  // reset button press state
+  A_pressed=false;
+
+  // 电机恢复正常转速
+  int top, bottom;
+  machine_run.get_wheel_speed_percent(top,bottom);
+  ledcWrite(PIN_PWM1, pwm_percent(top));
+  ledcWrite(PIN_PWM2, pwm_percent(bottom));
 }
+
 // setting PWM properties
 const int freq = 2000;
 const int resolution = 8;
@@ -238,13 +264,17 @@ void setup(){
 
   State* stIdleState = fsm.addState("Idle State",onEnterIdle, nullptr, onIdleRunning);
 
-  State* stStartWheelState = fsm.addState("Start Wheel State", OnEnterStartWheel, stopAllMotor /* exit */, onStartRunning);
-  State* stRunningState = fsm.addState("Running State", onEnterRunning, stopAllMotor/* exit */, onRunning);
+  State* stStartWheelState = fsm.addState("Start Wheel State", OnEnterStartWheel, nullptr /* exit */, nullptr);
+  State* stWheelReadyState = fsm.addState("Wheel Ready State", OnEnterWheelReady, nullptr /* exit */, nullptr);
+  State* stRunningState = fsm.addState("Running State", nullptr, stopAllMotor/* exit */, onRunning);
 
   stIdleState->addTransition(stStartWheelState, A_pressed);
 
-  stStartWheelState->addTransition(stRunningState, 5000);     // 5 seconds and everything is fine,  to start 
+  stStartWheelState->addTransition(stWheelReadyState, 5000);     // 5 seconds and everything is fine,  to start 
   stStartWheelState->addTransition(stIdleState, A_pressed);     // 5 seconds and everything is fine,  to start 
+
+  stWheelReadyState->addTransition( stRunningState, 2000);      // 2s waiting for motor speed
+  stWheelReadyState->addTransition(stIdleState, A_pressed);
   //stStartWheelState->addTransition(stHaltState, f_error);    // in case of error, go to error halt
   
   stRunningState->addTransition(stIdleState, A_pressed);

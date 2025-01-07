@@ -39,7 +39,7 @@ class MotorPID {
       // regurate 
       pid_out = min(255,max(0,pid_out));
 
-      Serial.println( String(error) + "," + String(pid_delta)+ "," + String(integral)+ "," + String(pid_out));
+      // Serial.println( String(error) + "," + String(pid_delta)+ "," + String(integral)+ "," + String(pid_out));
 
       // ledcWrite( PIN_PWM, pid_out );    // update pwm
       us_last = now;
